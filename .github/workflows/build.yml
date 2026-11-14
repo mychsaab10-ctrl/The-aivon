@@ -1,0 +1,67 @@
+name: Build AIVON APK
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Unzip project (AIVON.zip)
+        run: |
+          for z in AIVON*.zip; do
+            if [ -f "$z" ]; then unzip -q -o "$z" -d _src; fi
+          done
+
+      - name: Find project folder
+        id: proj
+        run: |
+          f=$(find . -maxdepth 4 -name settings.gradle.kts | head -n 1)
+          if [ -z "$f" ]; then
+            echo "settings.gradle.kts not found"
+            find . -maxdepth 4 -not -path "./.git/*" | head -50
+            exit 1
+          fi
+          d=$(dirname "$f")
+          echo "Project folder: $d"
+          echo "dir=$d" >> "$GITHUB_OUTPUT"
+
+      - name: Accept SDK licenses and get platform 34
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" || true
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Build
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon --console=plain \
+            -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8" \
+            -Dkotlin.daemon.jvm.options="-Xmx2g" 2>&1 | tee build.log
+
+      - name: Show real error (only if build failed)
+        if: failure()
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          echo "=========== ASLI ERROR ==========="
+          grep -n -E "^e: |What went wrong|Execution failed|error:|Could not|OutOfMemory|FAILED" build.log | head -40 || true
+          echo "=========== What went wrong (detail) ==========="
+          grep -n -A 12 "What went wrong" build.log | head -60 || true
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: AIVON-debug-apk
+          path: "**/build/outputs/apk/debug/app-debug.apk"
